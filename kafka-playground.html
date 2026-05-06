@@ -34,9 +34,13 @@ button:hover { transform: translateY(-1px); }
 .topic-box { background: #1a2a1a; border: 2px solid #00d4aa; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
 .topic-title { font-size: 13px; color: #00d4aa; font-weight: 600; margin-bottom: 8px; }
 
-.partition { background: #0d1b2a; border: 1px solid #2a4a6e; border-radius: 6px; padding: 8px; margin-bottom: 6px; position: relative; min-height: 40px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.partition-label { position: absolute; top: -8px; left: 8px; background: #16213e; padding: 0 4px; font-size: 10px; color: #48dbfb; }
-.message { display: inline-block; width: 24px; height: 24px; border-radius: 4px; font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: bold; animation: popIn 0.3s ease; }
+.partition { background: #0d1b2a; border: 1px solid #2a4a6e; border-radius: 6px; padding: 8px 8px 4px; margin-bottom: 10px; position: relative; overflow-x: auto; }
+.partition-label { display: inline-block; margin-bottom: 6px; font-size: 10px; color: #48dbfb; }
+.partition-slots { display: flex; gap: 6px; align-items: flex-end; min-height: 58px; }
+.msg-slot { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.message { width: 26px; height: 26px; border-radius: 4px; font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: bold; animation: popIn 0.3s ease; flex-shrink: 0; }
+.offset-label { font-size: 9px; color: #456; }
+.offset-cursor { font-size: 9px; white-space: nowrap; margin-top: 1px; }
 @keyframes popIn { from { transform: scale(0); } to { transform: scale(1); } }
 
 .consumer-group { background: #1b1a2e; border: 2px solid #5f27cd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
@@ -73,6 +77,14 @@ button:hover { transform: translateY(-1px); }
 
 .flying-message { position: fixed; pointer-events: none; font-size: 12px; font-weight: bold; z-index: 1000; transition: all 0.6s ease; opacity: 1; }
 .flying-message.fade { opacity: 0; }
+.scenarios { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; margin-bottom: 16px; padding: 10px; background: #0d1b2a; border-radius: 8px; max-width: 1400px; margin-left: auto; margin-right: auto; margin-bottom: 16px; }
+.btn-scenario { padding: 6px 14px; border: 1px solid #3a4a6e; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; background: #1a2a4a; color: #ccc; transition: all 0.2s; }
+.btn-scenario:hover { background: #2a3a6e; color: #fff; border-color: #5a7aae; }
+.btn-scenario.active { background: #2a3a6e; border-color: #00d4aa; color: #00d4aa; }
+.scenario-banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; max-width: 1400px; margin-left: auto; margin-right: auto; }
+.scenario-banner.wrong { background: #2d1010; border: 1px solid #ff6b6b; color: #ffaaaa; }
+.scenario-banner.right { background: #0d2010; border: 1px solid #00d4aa; color: #aaffdd; }
+.scenario-banner.neutral { background: #1a1a2e; border: 1px solid #5f27cd; color: #ddaaff; }
 </style>
 </head>
 <body>
@@ -103,6 +115,15 @@ button:hover { transform: translateY(-1px); }
   <button class="btn-mode" id="btnStandaloneMode" onclick="setMode('standalone')">Standalone Mode</button>
   <button class="btn-reset" onclick="resetAll()">Reset</button>
 </div>
+
+<div class="scenarios">
+  <span style="font-size:12px;color:#666;margin-right:8px;">📚 Scenarios:</span>
+  <button class="btn-scenario" onclick="loadScenario('cache-wrong')">❌ Cache Invalidation (Wrong)</button>
+  <button class="btn-scenario" onclick="loadScenario('cache-right')">✅ Cache Invalidation (Right)</button>
+  <button class="btn-scenario" onclick="loadScenario('order-processing')">🛒 Order Processing</button>
+</div>
+
+<div id="scenarioBanner" style="display:none" class="scenario-banner"></div>
 
 <div class="layout">
   <div class="panel">
@@ -154,7 +175,9 @@ let state = {
   messageCounter: 0,
   totalProduced: 0,
   roundRobinIndex: 0,
-  msgHistory: {}
+  msgHistory: {},
+  groupOffsets: { 'group-1': {} },
+  standaloneOffsets: {}
 };
 
 const colors = ['#ff6b6b','#feca57','#48dbfb','#ff9ff3','#00d4aa','#a29bfe','#fd79a8','#fdcb6e','#6c5ce7','#00cec9'];
@@ -188,7 +211,8 @@ function produceMessage() {
   state.totalProduced++;
   const partIdx = state.roundRobinIndex % state.partitions.length;
   state.roundRobinIndex++;
-  const msg = { id: state.messageCounter, color: colors[state.messageCounter % colors.length] };
+  const offset = state.partitions[partIdx].length;
+  const msg = { id: state.messageCounter, color: colors[state.messageCounter % colors.length], offset };
   state.partitions[partIdx].push(msg);
   log(`Produced msg #${msg.id} → Partition ${partIdx}`, 'log-produce');
 
@@ -201,8 +225,10 @@ function produceMessage() {
         if (!state.msgHistory[cid]) state.msgHistory[cid] = [];
         state.msgHistory[cid].push(msg);
         if (state.msgHistory[cid].length > 8) state.msgHistory[cid].shift();
+        if (!state.groupOffsets[group.name]) state.groupOffsets[group.name] = {};
+        state.groupOffsets[group.name][partIdx] = msg.offset;
         flashIds.push(cid);
-        log(`${group.name}/${cid} consumed msg #${msg.id} from P${partIdx}`, 'log-consume');
+        log(`${group.name}/${cid} consumed msg #${msg.id} from P${partIdx} @offset ${msg.offset}`, 'log-consume');
       }
     });
   } else {
@@ -210,8 +236,10 @@ function produceMessage() {
       if (!state.msgHistory[c]) state.msgHistory[c] = [];
       state.msgHistory[c].push(msg);
       if (state.msgHistory[c].length > 8) state.msgHistory[c].shift();
+      if (!state.standaloneOffsets[c]) state.standaloneOffsets[c] = {};
+      state.standaloneOffsets[c][partIdx] = msg.offset;
       flashIds.push(c);
-      log(`${c} consumed msg #${msg.id} from P${partIdx} (all partitions)`, 'log-consume');
+      log(`${c} consumed msg #${msg.id} from P${partIdx} @offset ${msg.offset}`, 'log-consume');
     });
   }
   render();
@@ -220,6 +248,7 @@ function produceMessage() {
     if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
   });
 }
+
 
 function produceBurst() {
   for (let i = 0; i < 5; i++) setTimeout(() => produceMessage(), i * 200);
@@ -269,6 +298,7 @@ function addConsumerGroup() {
   const gid = 'group-' + (state.consumerGroups.length + 1);
   const cid = 'C' + (getAllConsumersCount() + 1);
   state.consumerGroups.push({ name: gid, consumers: [cid], assignments: {} });
+  state.groupOffsets[gid] = {};
   log(`Created ${gid} with ${cid}`, 'log-rebalance');
   rebalance();
 }
@@ -298,7 +328,9 @@ function resetAll() {
     messageCounter: 0,
     totalProduced: 0,
     roundRobinIndex: 0,
-    msgHistory: {}
+    msgHistory: {},
+    groupOffsets: { 'group-1': {} },
+    standaloneOffsets: {}
   };
   document.getElementById('log').innerHTML = '';
   log('Reset complete', 'log-rebalance');
@@ -314,13 +346,46 @@ function render() {
 
   // Partitions
   const partEl = document.getElementById('partitions');
-  partEl.innerHTML = state.partitions.map((msgs, i) => `
-    <div class="partition">
-      <span class="partition-label">Partition ${i}</span>
-      ${msgs.slice(-12).map(m => `<div class="message" style="background:${m.color}">${m.id}</div>`).join('')}
-      ${msgs.length === 0 ? '<span style="color:#555;font-size:11px;margin-left:24px;">empty</span>' : ''}
-    </div>
-  `).join('');
+  partEl.innerHTML = state.partitions.map((msgs, i) => {
+    const visible = msgs.slice(-12);
+    const startOffset = msgs.length - visible.length;
+    // build cursor map: offset → [groupName labels]
+    const cursors = {};
+    if (state.mode === 'group') {
+      state.consumerGroups.forEach(group => {
+        const off = state.groupOffsets[group.name]?.[i];
+        if (off !== undefined) {
+          if (!cursors[off]) cursors[off] = [];
+          cursors[off].push({ label: group.name, color: '#ff9ff3' });
+        }
+      });
+    } else {
+      state.standaloneConsumers.forEach(c => {
+        const off = state.standaloneOffsets[c]?.[i];
+        if (off !== undefined) {
+          if (!cursors[off]) cursors[off] = [];
+          cursors[off].push({ label: c, color: '#48dbfb' });
+        }
+      });
+    }
+    const slots = visible.map(m => {
+      const cursorList = cursors[m.offset] || [];
+      const cursorHtml = cursorList.map(cu =>
+        `<div class="offset-cursor" style="color:${cu.color}">▲${cu.label}</div>`
+      ).join('');
+      return `<div class="msg-slot">
+        <div class="message" style="background:${m.color}">${m.id}</div>
+        <div class="offset-label">@${m.offset}</div>
+        ${cursorHtml}
+      </div>`;
+    }).join('');
+    return `<div class="partition">
+      <div class="partition-label">Partition ${i} &nbsp;·&nbsp; ${msgs.length} msg${msgs.length !== 1 ? 's' : ''}</div>
+      <div class="partition-slots">
+        ${slots || '<span style="color:#555;font-size:11px">empty</span>'}
+      </div>
+    </div>`;
+  }).join('');
 
   // Consumers
   const consEl = document.getElementById('consumerArea');
@@ -335,11 +400,16 @@ function render() {
             const isIdle = assigned.length === 0;
             const history = state.msgHistory[c] || [];
             const badges = history.map(m => `<div class="message" style="background:${m.color};width:20px;height:20px;font-size:9px">${m.id}</div>`).join('');
+            const offsetInfo = assigned.map(p => {
+              const off = state.groupOffsets[group.name]?.[p];
+              return `<span style="color:#feca57">P${p}@${off !== undefined ? off : '—'}</span>`;
+            }).join(' ');
             return `<div class="consumer" id="consumer-${c}" style="${isIdle ? 'opacity:0.5' : ''}">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${history.length?'4px':'0'}">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <span>📥 ${c}</span>
                 <span class="assigned">${isIdle ? '⚠️ IDLE' : 'P' + assigned.join(', P')}</span>
               </div>
+              ${!isIdle ? `<div style="font-size:10px;margin-bottom:${history.length?'4px':'0'}">committed offset: ${offsetInfo}</div>` : ''}
               ${history.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap">${badges}</div>` : ''}
             </div>`;
           }).join('')}
@@ -355,17 +425,87 @@ function render() {
         ${state.standaloneConsumers.map(c => {
           const history = state.msgHistory[c] || [];
           const badges = history.map(m => `<div class="message" style="background:${m.color};width:20px;height:20px;font-size:9px">${m.id}</div>`).join('');
+          const offsetInfo = state.partitions.map((_, p) => {
+            const off = state.standaloneOffsets[c]?.[p];
+            return `<span style="color:#feca57">P${p}@${off !== undefined ? off : '—'}</span>`;
+          }).join(' ');
           return `<div class="consumer" id="consumer-${c}">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${history.length?'4px':'0'}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
               <span>📥 ${c}</span>
-              <span class="assigned">ALL partitions (P0-P${state.partitions.length - 1})</span>
+              <span class="assigned">ALL partitions</span>
             </div>
+            <div style="font-size:10px;margin-bottom:${history.length?'4px':'0'}">last seen offset: ${offsetInfo}</div>
             ${history.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap">${badges}</div>` : ''}
           </div>`;
         }).join('')}
         <div style="font-size:10px;color:#48dbfb;margin-top:4px;">Each consumer reads every message — no sharing of work</div>
       </div>
     `;
+  }
+}
+
+function loadScenario(name) {
+  document.querySelectorAll('.btn-scenario').forEach(b => b.classList.remove('active'));
+  document.querySelector(`[onclick="loadScenario('${name}')"]`).classList.add('active');
+  const banner = document.getElementById('scenarioBanner');
+
+  if (name === 'cache-wrong') {
+    state = {
+      mode: 'group',
+      partitions: [[], []],
+      consumerGroups: [{ name: 'cache-svc', consumers: ['Pod-0', 'Pod-1', 'Pod-2'], assignments: {} }],
+      standaloneConsumers: ['S1'],
+      messageCounter: 0, totalProduced: 0, roundRobinIndex: 0,
+      msgHistory: {}, groupOffsets: { 'cache-svc': {} }, standaloneOffsets: {}
+    };
+    setMode('group');
+    banner.className = 'scenario-banner wrong';
+    banner.style.display = 'block';
+    banner.innerHTML = `<strong>❌ Wrong: All 3 pods share one consumer group "cache-svc"</strong><br>
+      Produce a "cache-clear" event and watch — only ONE pod receives it. The other two pods still have stale cache!<br>
+      <span style="color:#ff6b6b">This is the classic mistake: consumer groups are for dividing work, not broadcasting.</span>`;
+    document.getElementById('log').innerHTML = '';
+    log('Scenario: Cache Invalidation (WRONG) — 3 pods, 1 shared group', 'log-rebalance');
+  } else if (name === 'cache-right') {
+    state = {
+      mode: 'group',
+      partitions: [[], []],
+      consumerGroups: [
+        { name: 'cache-svc-pod-0', consumers: ['Pod-0'], assignments: {} },
+        { name: 'cache-svc-pod-1', consumers: ['Pod-1'], assignments: {} },
+        { name: 'cache-svc-pod-2', consumers: ['Pod-2'], assignments: {} },
+      ],
+      standaloneConsumers: ['S1'],
+      messageCounter: 0, totalProduced: 0, roundRobinIndex: 0,
+      msgHistory: {},
+      groupOffsets: { 'cache-svc-pod-0': {}, 'cache-svc-pod-1': {}, 'cache-svc-pod-2': {} },
+      standaloneOffsets: {}
+    };
+    setMode('group');
+    banner.className = 'scenario-banner right';
+    banner.style.display = 'block';
+    banner.innerHTML = `<strong>✅ Right: Each pod has its own consumer group ID</strong><br>
+      Each pod subscribes with a unique group ID (e.g. using the Kubernetes pod name). Produce a "cache-clear" event — all 3 pods receive it and can clear their local cache independently.<br>
+      <span style="color:#00d4aa">In code: set <code>group.id = "cache-svc-" + POD_NAME</code> when creating your Kafka consumer.</span>`;
+    document.getElementById('log').innerHTML = '';
+    log('Scenario: Cache Invalidation (RIGHT) — 3 pods, 3 separate groups', 'log-rebalance');
+  } else if (name === 'order-processing') {
+    state = {
+      mode: 'group',
+      partitions: [[], [], []],
+      consumerGroups: [{ name: 'order-workers', consumers: ['Worker-1', 'Worker-2', 'Worker-3'], assignments: {} }],
+      standaloneConsumers: ['S1'],
+      messageCounter: 0, totalProduced: 0, roundRobinIndex: 0,
+      msgHistory: {}, groupOffsets: { 'order-workers': {} }, standaloneOffsets: {}
+    };
+    setMode('group');
+    banner.className = 'scenario-banner neutral';
+    banner.style.display = 'block';
+    banner.innerHTML = `<strong>🛒 Order Processing: 3 workers share one consumer group</strong><br>
+      Each order event should be processed by exactly ONE worker (no duplicate processing). All workers are in the same group so Kafka distributes the load evenly — one partition per worker.<br>
+      <span style="color:#ddaaff">This is the right use of consumer groups: parallel work, no duplication.</span>`;
+    document.getElementById('log').innerHTML = '';
+    log('Scenario: Order Processing — 3 workers, 1 shared group', 'log-rebalance');
   }
 }
 
